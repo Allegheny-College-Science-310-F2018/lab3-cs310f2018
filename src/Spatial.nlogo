@@ -1,234 +1,155 @@
-extensions [sound]
 
-breed [predators predator]
 breed [preys prey]
-breed [s1s s1]
-breed [s0s s0]
-breed [posteriors posterior]
-breed [neurones neurone]
-breed [spikes spike]
-breed [reserves reserve]
-breed [ghosts ghost]
+breed [larvae larva]
+breed [sensors sensor]
 
-s1s-own [ps1]
-s0s-own [ps0]
-posteriors-own [actual]
-reserves-own [actual]
-ghosts-own [actual]
 
-globals [dt scale marker draw S resolution d drift g n]
+sensors-own [spike-prob spike-count]
+patches-own [prior posterior likelihood PrSghere]
 
-to setup 
-  
+globals [normalise larvae-size dt dummy conv-count times-to-convergence max-then max-now]
+
+to setup
+
   ;; (for this model to work with NetLogo's new plotting features,
   ;; __clear-all-and-reset-ticks should be replaced with clear-all at
   ;; the beginning of your setup procedure and reset-ticks at the end
   ;; of the procedure.)
   __clear-all-and-reset-ticks
-  resize-world -16 16 -16 16
-  set-patch-size 15
-  ask patches with [pycor >= 12] [set pcolor white]
-  
-  ask patches with [(pycor <= 7) and (pycor >= -7)] [set pcolor white]
-  ask patches with [pycor = 10 or pycor = 9] [set pcolor white]
-  
-  ask patches with [pycor <= -9] [set pcolor white]
-  
-  set resolution 200
-  
-  create-s1s resolution [set shape "dot" set size .5 set heading 90 set color black
-    setxy (-14 + who * 28 / resolution) -15]
-  
-  create-s0s resolution [set shape "dot" set size .5 set color black
-    setxy (-14 + (who - resolution) * 28 / resolution) -15]
-  
-  create-posteriors resolution [
-      set shape "dot" set size .3 set color 0 setxy (-14 + (who - 2 * resolution) * 28 / resolution) -6
-  ]
-  
-  ask turtles with [(breed = s1s or breed = s0s or breed = posteriors) and (xcor < -13.44)] [die]
-  
-    let mu .25
-    let sigma .1
-    let A (1 / (sigma * sqrt(2 * pi)))
-    ask posteriors [set actual resolution / count s1s]
-    
-  create-reserves resolution [
-    set shape "dot" set size .3 set color white
-    set xcor ([xcor] of max-one-of s1s [xcor]) 
-    set actual [actual] of one-of posteriors
-  ]
-    
-  
-  set drift 28 / resolution
-  set dt .001
-  set d 1
-  set g 20
-  set n 100
-  
-  ask s0s [let I (g * (([xcor] of self + 14) / 14) ^ (-2) + n) * dt
-    set ps0 e ^ (-1 * I)
-    set ycor (ycor + 4 * e ^ (-1 * I))]
-  
-  ask s1s [let I (g * (([xcor] of self + 14) / 14) ^ (-2) + n) * dt
-    set ps1 1 - e ^ (-1 * I)
-    set ycor (ycor + 4 * (1 - e ^ (-1 * I)))
-    ]
-  
-  create-predators 1 [setxy -14 14 set size 3 set shape "circle" set color red]
-  create-neurones 1 [setxy -14 14 set size 1 set shape "circle" set color black]
-  create-preys 1 [setxy ([xcor] of max-one-of posteriors [xcor]) 14 set size 1 set shape "circle" set color blue]
-  
-  ;shave off pesky decimals
-  ask turtles [set xcor (round (xcor * 100) / 100)]
-  
-  ask patch 11 -16 [set plabel-color black set plabel "Pr(S=1|D)"]
-  ask patch 11 -10 [set plabel-color black set plabel "Pr(S=0|D)"]
-  
-  set scale 14 / (2 * floor ([actual] of one-of posteriors with-max [actual]))
-  set marker round (14 / scale)
-  ask patch -15 7 [set plabel-color black set plabel marker]
-  ask turtles with [breed = posteriors or breed = reserves] [set ycor (-6 + scale * actual)]
 
-  
+  set-default-shape turtles "circle"
+
+  set-patch-size 16
+  resize-world -15 15 -15 15
+  set dt .001
+
+  set larvae-size .2 * (max-pxcor - min-pxcor)
+
+  create-larvae 1 [
+    set color red
+    set size larvae-size * 2
+  ]
+
+  create-sensors S [
+    set color black
+    set size 1
+    layout-circle sensors larvae-size
+  ]
+
+  setup-simulation
+
+end
+
+to setup-simulation
+
+  ask patches [set pcolor 102]
+
+  create-preys 1 [
+    set color red
+    set size patch-size / 10
+    set heading theta
+    fd larvae-size + r * 10
+  ]
+
+  ask patches with [distance one-of larvae > larvae-size] [
+    ;initial prior is Poisson.
+    set prior (1 / count patches with [distance one-of larvae > larvae-size])
+    set pcolor 102 + 50 * prior
+    set PrSghere []
+
+    ;what is the probability that each sensor will spike, if the prey were on this patch?
+    foreach sort-by [[who] of ?1 > [who] of ?2] sensors [
+      let d distance ? / 10
+      let sigma (1 / d ^ 2)
+      let intensity (g * sigma + n)
+      set PrSghere fput (1 - e ^ (- intensity * dt)) PrSghere
+    ]
+
+  ]
+
+  ;what is the probability that each sensor will spike, given prey location?
+  ask sensors [
+    set spike-count 0
+      ;get the distance to prey
+      let r1 (sum [distance myself] of preys) / 10
+      ;calculate the signals
+      let sigma1 1 / r1 ^ 2
+      ;expected number of spikes in time interval 1
+      let intensity1 (g * sigma1 + n)
+      ;given prey location, this sensor fires with probability spike-prob.
+      set spike-prob (1 - e ^ (- intensity1 * dt))
+    ]
+
+
 end
 
 to go
-  
-  if d < .05 [stop]
-  move-prey
-  see-a-spike?
-  drift-posterior
-  update-posterior
-  plot-smart
-  if [xcor] of one-of preys < -9 [wait .1]
+
   tick
-  
+  generate-spikes
+  calculate-likelihood
+  update-prior
+
 end
 
-to move-prey
-  
-  ask preys [setxy (xcor - drift) 14]
-  
-end
+to generate-spikes
 
-to see-a-spike?
-  
-  ;get probabilities of spiking
-  set d ([xcor] of one-of preys - [xcor] of one-of predators) / 14
-  let signal (1 / d ^ 2)
-  let intensity (g * signal + n)
-  set draw (1 - e ^ (- intensity * dt))
-  
-  ask spikes [set xcor xcor + .3]
-  
-  set S random-float 1
-  
-    ifelse S < draw [
-    sound:play-drum "ACOUSTIC SNARE" 64
-    ask neurones [set color white]
-    create-spikes 1 [set shape "line" set size 1 setxy -14 9 set color black set heading 0]
-    display
-    ]
-    [ask neurones [set color black]]
-    
-  ask spikes with [xcor > 14] [die]
-  
-end
 
-to drift-posterior
- 
-  
-  ask posteriors [set xcor (xcor - drift)]
-  ask one-of reserves with-min [who] [
-    set color black set breed posteriors set shape "dot"
-    set xcor (xcor - drift)
+  ask sensors [
+    ;draw a random number and see if sensor spikes
+    ifelse random-float 1 < spike-prob
+    [set color white set spike-count (spike-count + 1)]
+    [set color black]
   ]
-  
-  ask posteriors with [xcor < -13.44] [die]
-  
-  ;shave off pesky decimals
-  ask turtles [set xcor (round (xcor * 100) / 100)]
-  
+
 end
 
-to update-posterior
-  
-  ;update the newest posterior
-  ifelse S < draw 
-    [ask posteriors [set actual (actual * item 0 [ps1] of s1s with [xcor = [xcor] of myself])]
-     ask reserves [set actual (actual * item 0 [ps1] of s1s with [xcor = [xcor] of myself])]
+to calculate-likelihood
+
+  ask patches with [distance one-of larvae > larvae-size] [
+
+    ;since sensors are independent, Pr(spike set) = product of individual sensors spiking.
+    ;what is the probability of the observed spike set if a prey were on this patch?
+
+    set likelihood 1
+
+    foreach sort-by [[who] of ?1 > [who] of ?2] sensors [
+
+      ifelse [color] of ? = white
+      [set likelihood (likelihood * item ([who] of ? - 1) PrSghere)]
+      [set likelihood (likelihood * (1 - item ([who] of ? - 1) PrSghere) ) ]
+
     ]
-    [ask posteriors [set actual (actual * item 0 [ps0] of s0s with [xcor = [xcor] of myself])]
-     ask reserves [set actual (actual * item 0 [ps0] of s0s with [xcor = [xcor] of myself])]
-    ]
-    
-  ;normalise new posterior
-  let normalise (sum [actual] of posteriors)
-  ask posteriors [set actual (actual * resolution / normalise)]
-  ask reserves [set actual (actual * resolution / normalise)]
-  
-  ask ghosts [set color color + .9]
-  ask ghosts with [color > 9.9] [die]
-  
-  ask posteriors [hatch-ghosts 1 [
-      set size .3 set color 1 set shape "dot"]]
-  
+
+    set posterior (likelihood * prior)
+  ]
+
 end
 
-to plot-smart
-  
-  ;does the plot need to be rescaled?
-  let top max [ycor] of turtles with [breed = posteriors or breed = ghosts]
-  
-  ifelse ((top > 6) or (top < 0))
-    [set scale 14 / (2.5 * floor ([actual] of one-of turtles with [breed = posteriors or breed = ghosts] with-max [actual]))
-     set marker round (14 / scale)
-     ask patch -15 7 [set plabel-color black set plabel marker]
-     ask posteriors [set ycor (-6 + scale * actual)]
-     ask reserves [set ycor (-6 + scale * actual)]
-     ask ghosts [set ycor (-6 + scale * actual)]
-    ]
-    
-    [ask posteriors [set ycor (-6 + scale * actual)]
-     ask reserves [set ycor (-6 + scale * actual)]
-     ask ghosts [set ycor (-6 + scale * actual)]
-    ]
-    
-    ask patch -3 -7 [
-      ifelse [xcor] of one-of preys > 0 
-      [set plabel-color black set plabel "prey is almost certainly not very close"]
-      [set plabel ""]
-    ]
-     
-    ask patch 0 -7 [
-      ifelse [xcor] of one-of preys < 0 and [xcor] of one-of preys > -8
-      [set plabel-color black set plabel "as prey gets closer, watch posterior follow it in"]
-      [set plabel ""]
-    ]
-    
-    ask patch 0 -7 [
-      if [xcor] of one-of preys < -13
-      [set plabel-color black set plabel "now prey is almost certainly very close"]
-    ]
-    
-    ask patch 14 -5 [
-      if [xcor] of one-of preys < -13
-      [set plabel-color black set plabel "<- fading trail indicates posterior tracking the prey when it was very close"]
-    ]
-      
+to update-prior
 
-  
+  set normalise (sum [posterior] of patches)
+
+  ask patches with [distance one-of larvae > larvae-size] [
+    set posterior (posterior / normalise)
+    set pcolor 102 + 50 * posterior
+    ;set pcolor 102 + 1000 * posterior
+    if pcolor >= 110 [set pcolor 109.9]
+    set prior posterior
+  ]
+
+
 end
+
 @#$#@#$#@
 GRAPHICS-WINDOW
-346
-26
-851
-552
-16
-16
-15.0
+705
+27
+1211
+554
+15
+15
+16.0
 1
 10
 1
@@ -236,12 +157,12 @@ GRAPHICS-WINDOW
 1
 0
 0
+0
 1
-1
--16
-16
--16
-16
+-15
+15
+-15
+15
 1
 1
 1
@@ -249,10 +170,10 @@ ticks
 30.0
 
 BUTTON
-135
-114
-201
-147
+234
+250
+300
+283
 NIL
 setup
 NIL
@@ -265,11 +186,26 @@ NIL
 NIL
 1
 
+SLIDER
+308
+143
+428
+176
+S
+S
+0
+50
+25
+1
+1
+NIL
+HORIZONTAL
+
 BUTTON
-135
-213
-203
-246
+357
+455
+420
+488
 NIL
 go
 T
@@ -282,42 +218,152 @@ NIL
 NIL
 1
 
-TEXTBOX
-107
-86
-257
-106
-1)  Click setup
-16
-0.0
+SLIDER
+529
+134
+644
+167
+g
+g
 1
+10
+1
+1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+529
+172
+644
+205
+n
+n
+0
+100
+100
+1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+44
+128
+223
+161
+r
+r
+.01
+.5
+0.1
+.01
+1
+NIL
+HORIZONTAL
+
+SLIDER
+44
+165
+224
+198
+theta
+theta
+0
+360
+0
+1
+1
+NIL
+HORIZONTAL
 
 TEXTBOX
-70
-160
-285
+15
+251
 201
-2)  Click go; click once to run, click again to pause
-16
+284
+2)  Click 'setup'
+24
 0.0
 1
 
 TEXTBOX
-73
-35
-303
-53
-Note:  see Information tab for more details
+16
+40
+293
+75
+1)  Choose parameters
+24
+0.0
+1
+
+TEXTBOX
+284
+114
+457
+132
+Number of sensors
+18
+0.0
+1
+
+TEXTBOX
+56
+100
+206
+122
+Location of prey
+18
+0.0
+1
+
+TEXTBOX
+517
+81
+658
+124
+Sensor gain and (uniform) noise
+18
+0.0
+1
+
+TEXTBOX
+14
+334
+697
+428
+3)  Run the model.  The posterior is represented by the color of the blue background; white = highly probable prey is there, dark blue = highly improbable prey is there.
+24
+0.0
+1
+
+TEXTBOX
+243
+455
+346
+483
+Click once to run, again to pause.
 11
 0.0
 1
 
 TEXTBOX
-51
-254
-294
-283
-A speed slider can be found at the top of the screen to adjust the speed of the simulation
+147
+494
+543
+537
+To adjust the speed of the simulation, there is a slider at the top of the screen.  Slow down the simulation to see individual neurones responding, then speed up the simulation to watch the posterior evolve more quickly.
+11
+0.0
+1
+
+TEXTBOX
+143
+13
+493
+31
+Note:  see the information tab for more model details
 11
 0.0
 1
@@ -325,21 +371,31 @@ A speed slider can be found at the top of the screen to adjust the speed of the 
 @#$#@#$#@
 ## WHAT IS IT?
 
-This model illustrates how sequential Bayesian inference can be applied to models where the state of the world being measured is dynamic.
+This model illustrates how spatial distributions of spiking sensors (small black circles) can, in principle, use Bayesian inference about some state of the world.  In this model, the state of the world considered is the location of a prey (small red circle) with respect to a predator (large red circle).  Watch how spatial distributions of spiking sensors can represent a probability distribution of prey location that converges on its actual location
 
 ## HOW IT WORKS
 
-The predator has a neurone that fires a spike on a time step with probability Pr(S|D), as outlined in the manuscript.  Given this conditional probability, which is plotted at the bottom of the screen, and a prior distribution Pr(D), we can infer the prey location Pr(D|S) by Bayes' rule.  By letting the posterior distribution Pr(D|S) become the prior on the next time step, we can perform Bayes' rule recursively in time.
+The predator has S neurones (S is user-defined) that are equally spaced around the circumference of the predator.  Each sensor fires a spike on a time step with probability Pr(S|r,theta), where (r, theta) is the position of the prey with respect to the predator, as outlined in the manuscript.  Given this conditional probability and a prior distribution, we can infer the prey location by Bayes' rule with the individual spikes and non-spikes of the individual neurones.
 
-However, the prey deterministically drifts closer to the predator after every time step.  When the state of the world is dynamic, we need to calculate the posterior using a two-step recursion as outlined in the text.  After a time step, the posterior shifts with the prey and is then updated given the spiking output of the neurone.  The process then repeats.
+Since the posterior distribution is in two dimensions, the probability that the prey is on a certain square patch is indicated by the colour of that patch.  If the patch is blue, then the prey is unlikely to be on that patch, given the output of the sensors.  If the patch is white, then the prey is highly likely to be on that patch, given the output of the sensors.
 
 ## HOW TO USE IT
 
-Just click 'setup' and 'go.'
+To start, set the parameters of the model to your desired values.  Choose the location of the prey using the `distance-from-predator' and 'angle' sliders and the number of sensors S that the predator possesses.  Choose the gain and noise of each sensor; sensors are defined to be equivalent, so every sensor will have the same gain and noise parameter values.
 
-## THINGS TO NOTICE
+Next, click the 'setup' button and then click 'go.'  Click the 'go' button once to start running a simulation, and click again to pause it.  Use the speed slider at the top of the screen to control the speed of the simulation.  Every time step is one millisecond in duration.  When a neurone spikes in a time step, that neurone flashes white, and when a neuron does not spike on a time step, that neurone is black.  The posterior distribution of prey location is modified accordingly (see the manuscript) and the simulation proceeds to the next time step.
 
-The notes that appear during the model's running time point out key observations.
+## THINGS TO TRY
+
+Investigate how the gain/noise ratio affects the speed of convergence of the posterior to the actual prey location.  The higher the gain/noise ratio, the fewer time steps required for the posterior to accurately estimate prey location.
+
+Investigate how the proximity of the prey to the predator affects the speed of convergence of the posterior to the actual prey location.  The smaller r is, the fewer time steps required for the posterior to accurately estimate prey location.
+
+Investigate how the number of sensors S affects the speed of convergence of the posterior to the actual prey location. Generally speaking, the higher S is, the fewer time steps required for the posterior to accurately estimate prey location.
+
+## EXTENDING THE MODEL
+
+To relax the assumption that prey is stationary, we need to utilise some basic theory from particle filtering (sequential Monte Carlo approximation algorithms).
 @#$#@#$#@
 default
 true
@@ -633,7 +689,7 @@ Polygon -7500403 true true 270 75 225 30 30 225 75 270
 Polygon -7500403 true true 30 75 75 30 270 225 225 270
 
 @#$#@#$#@
-NetLogo 5.0.4
+NetLogo 5.3.1
 @#$#@#$#@
 @#$#@#$#@
 @#$#@#$#@
@@ -641,9 +697,9 @@ NetLogo 5.0.4
 @#$#@#$#@
 default
 0.0
--0.2 0 1.0 0.0
+-0.2 0 0.0 1.0
 0.0 1 1.0 0.0
-0.2 0 1.0 0.0
+0.2 0 0.0 1.0
 link direction
 true
 0
